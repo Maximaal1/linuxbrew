@@ -1,3 +1,5 @@
+require "formula"
+
 class Gcc < Formula
   def arch
     if Hardware::CPU.type == :intel
@@ -23,13 +25,11 @@ class Gcc < Formula
   url "http://ftpmirror.gnu.org/gcc/gcc-4.9.2/gcc-4.9.2.tar.bz2"
   mirror "ftp://gcc.gnu.org/pub/gcc/releases/gcc-4.9.2/gcc-4.9.2.tar.bz2"
   sha1 "79dbcb09f44232822460d80b033c962c0237c6d8"
-  revision 1
 
   bottle do
-    revision 1
-    sha256 "4e8d95ce716ec056ee6e29271aa9121f23e535678365e5e075aeda49249d76f0" => :yosemite
-    sha256 "710d0d5462900da808596940d81aee9ac14c4c25f38f6008051577497d70df44" => :mavericks
-    sha256 "c4d9704632d46fc1ec8e505185f95ce42b69fb12d9644dd894c420f72fb55c29" => :mountain_lion
+    sha1 "178f037a3970fb9a86c07aad8215acbb9467ab63" => :yosemite
+    sha1 "a3e86973036b15371f2443eb05056d942f7d3dff" => :mavericks
+    sha1 "3d909968fc9bd6c505fd4ff20cf4bc5f4e0ba197" => :mountain_lion
   end
 
   option "with-java", "Build the gcj compiler"
@@ -110,7 +110,6 @@ class Gcc < Formula
     end
     args += [
       "--prefix=#{prefix}",
-      ("--libdir=#{lib}/gcc/#{version_suffix}" if OS.mac?),
       "--enable-languages=#{languages.join(",")}",
       # Make most executables versioned to avoid conflicts.
       "--program-suffix=-#{version_suffix}",
@@ -122,13 +121,16 @@ class Gcc < Formula
     ]
     args += [
       "--with-system-zlib",
+      # This ensures lib, libexec, include are sandboxed so that they
+      # don't wander around telling little children there is no Santa
+      # Claus.
+      "--enable-version-specific-runtime-libs",
+    ] if OS.mac?
+    args += [
       "--enable-libstdcxx-time=yes",
       "--enable-stage1-checking",
       "--enable-checking=release",
       "--enable-lto",
-      # Use 'bootstrap-debug' build configuration to force stripping of object
-      # files prior to comparison during bootstrap (broken by Xcode 6.3).
-      "--with-build-config=bootstrap-debug",
       # A no-op unless --HEAD is built because in head warnings will
       # raise errors. But still a good idea to include.
       "--disable-werror",
@@ -156,16 +158,18 @@ class Gcc < Formula
       args << "--enable-multilib"
     end
 
-    # Ensure correct install names when linking against libgcc_s;
-    # see discussion in https://github.com/Homebrew/homebrew/pull/34303
-    inreplace "libgcc/config/t-slibgcc-darwin", "@shlib_slibdir@", "#{HOMEBREW_PREFIX}/lib/gcc/#{version_suffix}"
-
     mkdir "build" do
       if OS.mac? && !MacOS::CLT.installed?
         # For Xcode-only systems, we need to tell the sysroot path.
         # "native-system-header's will be appended
         args << "--with-native-system-header-dir=/usr/include"
         args << "--with-sysroot=#{MacOS.sdk_path}"
+      end
+
+      if OS.linux?
+        @link = Pathname.new "#{prefix}/x86_64-unknown-linux-gnu/bin"
+        @link.parent.mkpath
+        @link.make_symlink "#{HOMEBREW_PREFIX}/lib"
       end
 
       system "../configure", *args
@@ -177,8 +181,7 @@ class Gcc < Formula
       end
 
       if OS.linux?
-        # Create cpp, gcc and g++ symlinks
-        bin.install_symlink "cpp-#{version_suffix}" => "cpp"
+        # Create gcc and g++ symlinks
         bin.install_symlink "gcc-#{version_suffix}" => "gcc"
         bin.install_symlink "g++-#{version_suffix}" => "g++"
       end
@@ -196,10 +199,10 @@ class Gcc < Formula
     # Rename java properties
     if build.with?("java") || build.with?("all-languages")
       config_files = [
-        "#{lib}/gcc/#{version_suffix}/logging.properties",
-        "#{lib}/gcc/#{version_suffix}/security/classpath.security",
-        "#{lib}/gcc/#{version_suffix}/i386/logging.properties",
-        "#{lib}/gcc/#{version_suffix}/i386/security/classpath.security",
+        "#{lib}/logging.properties",
+        "#{lib}/security/classpath.security",
+        "#{lib}/i386/logging.properties",
+        "#{lib}/i386/security/classpath.security"
       ]
       config_files.each do |file|
         add_suffix file, version_suffix if File.exist? file
@@ -213,9 +216,20 @@ class Gcc < Formula
       rmdir lib64
       prefix.install_symlink "lib" => "lib64"
     end
+    
+    if OS.linux?
+      p = @link.parent
+      @link.delete
+      p.delete
+      crts = Pathname.new "#{lib}/gcc/x86_64-unknown-linux-gnu/#{version}"
+      Formula['glibc'].lib.children.select {|p| p.basename.to_s =~ /^crt.\.o$/ }.collect {|p| p.relative_path_from crts}.each do |p|
+        crts.install_symlink p 
+      end
+    end
+
   end
 
-  def add_suffix(file, suffix)
+  def add_suffix file, suffix
     dir = File.dirname(file)
     ext = File.extname(file)
     base = File.basename(file, ext)
@@ -285,11 +299,11 @@ class Gcc < Formula
     system "#{bin}/gcc-#{version_suffix}", "-o", "hello-c", "hello-c.c"
     assert_equal "Hello, world!\n", `./hello-c`
 
-    (testpath/"hello-cc.cc").write <<-EOS.undent
+    (testpath/"hello-cc.cc").write <<-'EOS'.undent
       #include <iostream>
       int main()
       {
-        std::cout << "Hello, world!" << std::endl;
+        std::cout << "Hello, world!\n";
         return 0;
       }
     EOS
